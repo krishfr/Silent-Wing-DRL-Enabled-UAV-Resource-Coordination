@@ -17,6 +17,8 @@ checkpoints/
 data/
 datasets/
 logs/
+models/
+checkpoints/
 
 # OS
 .DS_Store
