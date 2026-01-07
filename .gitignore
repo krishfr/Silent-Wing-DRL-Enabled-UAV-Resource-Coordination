@@ -1,0 +1,22 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# ML / DL
+*.h5
+*.pt
+*.pth
+*.ckpt
+*.npz
+*.npy
+models/
+checkpoints/
+
+# Data
+data/
+datasets/
+logs/
+
+# OS
+.DS_Store
