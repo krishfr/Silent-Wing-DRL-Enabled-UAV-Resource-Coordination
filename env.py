@@ -5,45 +5,51 @@ from uav import ChannelModel
 
 class UAVEnv:
     def __init__(self, env_params, reward_params, channel_params):
-
+        # Initialize environment, reward, and channel configurations
         self.env_params = env_params
         self.reward_params = reward_params
         self.channel_params = channel_params
 
         self.map_size = self.env_params['map_size']
         self.max_steps = self.env_params['max_steps']
-        self.normalization_factor = self.env_params['map_size']  # 归一化因子等于地图尺寸
+        
+        # Normalization factor used to scale coordinates between -1 and 1
+        self.normalization_factor = self.env_params['map_size']  
         self.time_slot = self.env_params['time_slot']
 
         self.start = np.array(self.env_params['start_pos'])
         self.goal = np.array(self.env_params['goal_pos'])
         
-        # 初始化合法节点
+        # Initialize ground communication nodes
         self.legitimate_nodes = [np.array(pos) for pos in self.env_params['legitimate_nodes']]
         
-        # 随机生成监管者
+        # Procedurally generate wardens (detectors)
         self._generate_wardens()
         
-        # 环境状态变量
+        # Initial state variables
         self.current_step = 0
         self.state = self.start.copy()
         
-        # 动力学参数
+        # Constant flight speed magnitude
         self.velocity_magnitude = self.env_params['velocity_magnitude']
 
-        # 传递信道参数和环境参数
-        self.channel_model = ChannelModel(channel_params=self.channel_params, env_params=self.env_params, seed=int(time.time()))
+        # Setup channel model with time-based seed for stochastic elements
+        self.channel_model = ChannelModel(
+            channel_params=self.channel_params, 
+            env_params=self.env_params, 
+            seed=int(time.time())
+        )
         
-        # 性能指标记录
+        # Metrics for performance tracking
         self.dep_history = []
         self.transmission_rate_history = []
     
     def _generate_wardens(self):
-        # 随机确定监管者数量
+        # Randomize the number of wardens based on the config range
         min_count, max_count = self.env_params['warden_count_range']
         self.warden_count = random.randint(min_count, max_count)
         
-        # 随机生成监管者位置
+        # Randomize warden placement within the specified range
         min_pos, max_pos = self.env_params['warden_pos_range']
         self.wardens = []
         for _ in range(self.warden_count):
@@ -54,11 +60,11 @@ class UAVEnv:
         self.wardens = np.array(self.wardens)
         
     def _calculate_transmission_rates(self):
-
+        # Calculate individual rates for each ground node
         rates_to_nodes = []
         
         for node_pos in self.legitimate_nodes:
-            # 计算传输速率 R_l = log2(1 + SNR)
+            # R_l = log2(1 + SNR) calculation via channel model
             transmission_rate = self.channel_model.calculate_transmission_rate(
                 self.state[0], self.state[1], node_pos[0], node_pos[1]
             )
@@ -67,9 +73,8 @@ class UAVEnv:
         total_transmission_rate = sum(rates_to_nodes)
         return total_transmission_rate, rates_to_nodes
 
-    # 环境接口
-    
     def get_state(self):
+        # Normalize coordinates to a range of [-1, 1] relative to the map center
         map_center = self.normalization_factor / 2.0
         pos_norm = (self.state - map_center) / (self.normalization_factor / 2.0)
         pos_norm = np.clip(pos_norm, -1.0, 1.0)
@@ -80,14 +85,14 @@ class UAVEnv:
         return self.get_state()
 
     def reset(self):
+        # Re-initialize wardens and reset episode counters/states
         self._generate_wardens()
-        
         self.state = self.start.copy()
         self.current_step = 0
         self.dep_history = []
         self.transmission_rate_history = []
         
-        # 计算初始DEP值
+        # Compute initial Detection Error Probability (DEP)
         if len(self.wardens) > 0:
             initial_dep = self.channel_model.calculate_dep(
                 self.state[0], self.state[1], 
@@ -98,58 +103,57 @@ class UAVEnv:
             self.dep_history.append(0.0)
 
         self.prev_dist_to_dest = np.linalg.norm(self.state - self.goal)
-        self.position_history = [] # 重置位置历史，用于振荡检测
+        self.position_history = [] # For oscillation detection
         
         return self._get_obs()
 
     def step(self, action):
         reward = 0.0
-        # 将动作转换为速度向量，动作控制方向，速度大小恒定为V
+        
+        # Convert action vector to velocity direction; magnitude is constant
         action_norm = np.linalg.norm(action)
-        if action_norm > 1e-8:  # 避免除零
+        if action_norm > 1e-8:
             velocity_direction = action / action_norm
         else:
-            # 如果动作为零向量，保持当前方向或随机方向
-            velocity_direction = np.array([1.0, 0.0])  # 默认向右
+            velocity_direction = np.array([1.0, 0.0]) # Default movement if zero action
+            
         velocity = velocity_direction * self.velocity_magnitude
         
-        # 计算下一个位置
+        # Calculate next position based on dynamics
         next_state = self.state + self.time_slot * velocity
 
-        # 边界碰撞
+        # Boundary collision check
         boundary_violation = False
         if np.any(next_state < 0.0) or np.any(next_state > self.env_params['map_size']):
-            # 限制在边界内
             self.state = np.clip(next_state, 0.0, self.env_params['map_size'])
             boundary_violation = True
-            # 给予边界惩罚
             reward += self.reward_params['boundary_penalty']
         else:
             self.state = next_state
         
-        # 边界惩罚场
+        # Boundary penalty field (potential field)
+        # Penalizes the agent as it gets close to the map edges
         boundary_distance = min(
-            self.state[0],  # 左边界
-            self.state[1],  # 下边界
-            self.env_params['map_size'] - self.state[0],  # 右边界
-            self.env_params['map_size'] - self.state[1]   # 上边界
+            self.state[0],
+            self.state[1],
+            self.env_params['map_size'] - self.state[0],
+            self.env_params['map_size'] - self.state[1]
         )
         
         boundary_field_penalty = 0.0
         boundary_penalty_threshold = self.reward_params.get('boundary_penalty_threshold', 40.0)
         if boundary_distance < boundary_penalty_threshold:
-            # 其实奖励场就是一个开口向下的二次函数
+            # Quadratic penalty function
             boundary_penalty_strength = self.reward_params.get('boundary_penalty_strength', 0.01)
             boundary_field_penalty = -boundary_penalty_strength * (boundary_penalty_threshold - boundary_distance) ** 2
             reward += boundary_field_penalty
 
-        # 更新环境状态
         self.current_step += 1
 
-        # 当前距离
+        # Calculate distances for reward components
         dist_to_dest = np.linalg.norm(self.state - self.goal)
         
-        # 到最近监管者的距离
+        # Locate closest warden
         dist_to_warden = float('inf')
         closest_warden_idx = 0
         for i, warden in enumerate(self.wardens):
@@ -158,13 +162,13 @@ class UAVEnv:
                 dist_to_warden = dist
                 closest_warden_idx = i
 
-        # 到最近合法节点的距离
+        # Locate closest communication node
         distances_to_legit = [np.linalg.norm(self.state - node) for node in self.legitimate_nodes]
         min_dist_to_legit = min(distances_to_legit)
         closest_legit_idx = distances_to_legit.index(min_dist_to_legit)
         closest_legit_node = self.legitimate_nodes[closest_legit_idx]
         
-        # DEP
+        # Calculate DEP relative to the primary warden
         DEP = self.channel_model.calculate_dep(
             uav_x=self.state[0],
             uav_y=self.state[1],
@@ -172,10 +176,10 @@ class UAVEnv:
             warden_y=self.wardens[0][1]
         )
         
-        # 传输速率
+        # Calculate throughput
         total_transmission_rate, rates_to_nodes = self._calculate_transmission_rates()
         
-        # 保持向后兼容性，记录到最近节点的传输速率
+        # Legacy tracking for transmission rate to the nearest node
         transmission_rate = self.channel_model.calculate_transmission_rate(
             uav_x=self.state[0],
             uav_y=self.state[1],
@@ -183,53 +187,43 @@ class UAVEnv:
             ground_y=closest_legit_node[1]
         )
         
-        # 记录性能指标
         self.dep_history.append(DEP)
         self.transmission_rate_history.append(transmission_rate)
         
-        # 传输速率奖励
+        # Main reward components
         transmission_reward = total_transmission_rate * self.reward_params['transmission_weight']
-        
-        # 基础惩罚
         base_penalty = self.reward_params['base_penalty']
 
+        # Covertness penalty: triggers when DEP drops below the required threshold
         covertness_penalty = 0.0
         if DEP < self.reward_params['covertness_threshold']:
-            # 当DEP低于阈值时给予惩罚，因为隐蔽性不足
             covertness_penalty = self.reward_params['covert_penalty_weight'] * (self.reward_params['covertness_threshold'] - DEP)
         
-        # 目标导向奖励
+        # Goal reaching reward logic
         goal_reward = 0.0
         goal_reached = False
-        
-        # 任务完成奖励
         if dist_to_dest <= self.reward_params['goal_threshold']:
             goal_reward = self.reward_params['goal_reward']
             goal_reached = True
         
-        # 距离改善奖励，距离减少给奖励，增加给惩罚
+        # Distance guidance reward (Potential difference)
         distance_improvement_reward = 0.0
         if hasattr(self, 'prev_dist_to_dest'):
             distance_change = self.prev_dist_to_dest - dist_to_dest
             distance_improvement_reward = distance_change * self.reward_params.get('distance_guidance_weight', 0.1)
         
-        # 更新
         self.prev_dist_to_dest = dist_to_dest
         
-        # 振荡惩罚
+        # Oscillation penalty logic: penalizes repeating positions within a window
         oscillation_penalty = 0.0
         if not hasattr(self, 'position_history'):
             self.position_history = []
         
-        # 记录位置
         self.position_history.append(self.state.copy())
-        
-        # 保持位置历史
         history_length = self.reward_params.get('oscillation_history_length', 20)
         if len(self.position_history) > history_length:
             self.position_history.pop(0)
         
-        # 检测振荡，如果在最近N步内有相似位置出现可以视为震荡发生
         check_steps = self.reward_params.get('oscillation_check_steps', 10)
         distance_threshold = self.reward_params.get('oscillation_distance_threshold', 30.0)
         penalty_value = self.reward_params.get('oscillation_penalty', -50.0)
@@ -237,67 +231,50 @@ class UAVEnv:
         if len(self.position_history) >= check_steps:
             current_pos = self.state
             recent_positions = self.position_history[-check_steps:]
-            
-            for past_pos in recent_positions[:-1]:  # 排除当前位置
-                distance_to_past = np.linalg.norm(current_pos - past_pos)
-                if distance_to_past < distance_threshold:
-                    oscillation_penalty = penalty_value  # 给予振荡惩罚
+            for past_pos in recent_positions[:-1]:
+                if np.linalg.norm(current_pos - past_pos) < distance_threshold:
+                    oscillation_penalty = penalty_value
                     break
         
-        # 目标方向奖励，基于当前位置到目标的距离给予连续奖励，距离越近奖励越高
-        max_distance = np.sqrt(self.map_size**2 + self.map_size**2)  # 对角线距离
+        # Continuous proximity reward scaled by map size
+        max_distance = np.sqrt(self.map_size**2 + self.map_size**2)
         normalized_distance = dist_to_dest / max_distance
         proximity_reward = (1.0 - normalized_distance) * self.reward_params.get('proximity_reward_weight', 0.05)
         
-        # 步数效率奖励，鼓励最短路径，随着步数增加给予递减的时间惩罚
+        # Step efficiency penalty to discourage long paths
         step_efficiency_penalty = -self.current_step * self.reward_params.get('step_penalty_weight', 0.01)
         
-        # 合并所有奖励
+        # Aggregate guidance rewards
         total_goal_reward = goal_reward + distance_improvement_reward + proximity_reward + step_efficiency_penalty
         
-        # 基础约束惩罚
-        constraint_penalty = 0.0
+        # Combine all sub-rewards into final scalar
+        reward = (transmission_reward + base_penalty + covertness_penalty + 
+                  total_goal_reward + boundary_field_penalty + oscillation_penalty)
 
-        # 边界惩罚
-        constraint_penalty += boundary_field_penalty
-        
-        # 组合最终奖励，论文公式 + 目标导向改进 + 振荡惩罚
-        reward = transmission_reward + base_penalty + covertness_penalty + total_goal_reward + constraint_penalty + oscillation_penalty
-
-        # 检查终止条件
+        # Episode termination checks
         done = False
         termination_reason = "ongoing"
-        # 任务完成终止，即到达目标点
         if goal_reached:
             done = True
             termination_reason = "goal_reached"
-        
-        # 超过最大步数终止
         elif self.current_step >= self.max_steps:
             done = True
             termination_reason = "max_steps"
 
-        # 构建字典
+        # Construct comprehensive metadata dictionary
         info = {
-            # 核心指标
             'DEP': DEP, 
             'throughput': total_transmission_rate, 
             'rates_to_nodes': rates_to_nodes,
-
-            # 环境状态
             'dist_to_dest': dist_to_dest, 
             'dist_to_warden': dist_to_warden, 
             'velocity_magnitude': np.linalg.norm(velocity), 
             'step': self.current_step, 
-            
-            # 约束和终止条件
-            'covertness_violation': DEP < self.reward_params['covertness_threshold'], # 隐蔽性违反
+            'covertness_violation': DEP < self.reward_params['covertness_threshold'],
             'goal_reached': goal_reached,  
             'termination_reason': termination_reason,   
             'boundary_distance': boundary_distance, 
             'boundary_violation': boundary_violation, 
-            
-            # 奖励
             'transmission_reward': transmission_reward, 
             'base_penalty': base_penalty, 
             'covertness_penalty': covertness_penalty, 
@@ -306,7 +283,7 @@ class UAVEnv:
             'proximity_reward': proximity_reward, 
             'step_efficiency_penalty': step_efficiency_penalty, 
             'total_goal_reward': total_goal_reward,  
-            'constraint_penalty': constraint_penalty,     
+            'constraint_penalty': boundary_field_penalty,     
             'oscillation_penalty': oscillation_penalty,   
         }
         

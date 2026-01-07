@@ -28,7 +28,7 @@ class ExperimentLogger:
     
     def log_training_step(self, episode: int, step: int, state: np.ndarray, 
                          reward: float, info: dict):
-        # 记录坐标
+        
         self.coords_log.append([episode, step, state[0], state[1]])
     
     def log_episode_end(self, episode: int, total_reward: float, avg_dep: float, avg_throughput: float):
@@ -54,7 +54,7 @@ class ExperimentLogger:
         log_dir = "log"
         os.makedirs(log_dir, exist_ok=True)
         
-        # 保存训练数据
+        
         if self.coords_log:
             np.savetxt(os.path.join(log_dir, "train_coords.csv"), 
                       np.asarray(self.coords_log),
@@ -79,7 +79,7 @@ class ExperimentLogger:
         log_dir = "log"
         os.makedirs(log_dir, exist_ok=True)
         
-        # 保存测试数据
+        
         if self.test_coords_log:
             np.savetxt(os.path.join(log_dir, "test_coords.csv"), 
                       np.asarray(self.test_coords_log),
@@ -124,22 +124,23 @@ class ExperimentManager:
 
         static_viz = UnifiedVisualizer({}, self.output_dir)
         
-        # 保存数据
+        
         self.logger.save_training_data()
         self.logger.save_test_data(best_trajectory)
 
-        # 生成性能指标图
+        
         avg_deps = [np.mean(deps) if deps else 0.0 for deps in self.logger.all_deps]
         avg_throughputs = [np.mean(thrpts) if thrpts else 0.0 for thrpts in self.logger.all_throughputs]
         static_viz.plot_performance_metrics(avg_deps, avg_throughputs, self.logger.episode_rewards)
         
-        print(f"所有可视化结果已保存到 {self.output_dir}/ 目录")
+        print(f"All visualizations have been saved to {self.output_dir}/")
+
     
 
     
     def visualize_training(self):
         static_viz = UnifiedVisualizer({}, self.output_dir)
-        # 生成性能指标图
+        
         if self.logger.all_deps and self.logger.all_throughputs:
 
             avg_deps = self.logger.all_deps if (self.logger.all_deps and isinstance(self.logger.all_deps[0], (int, float))) else [np.mean(deps) if deps else 0.0 for deps in self.logger.all_deps]
@@ -157,9 +158,10 @@ class ExperimentManager:
             
             static_viz.plot_performance_metrics(avg_deps, avg_throughputs, self.logger.episode_rewards,test_deps, test_throughputs, test_rewards)
         
-        # 保存训练数据
+        
         self.logger.save_training_data()
-        print(f"训练可视化结果已保存到 {self.output_dir}/ 目录")
+        print(f"Training visualizations saved to {self.output_dir}/")
+
     
     def visualize_testing(self, env):
         if self.logger.all_deps and self.logger.all_throughputs and self.logger.test_deps and self.logger.test_throughputs:
@@ -174,6 +176,6 @@ class ExperimentManager:
             test_rewards = self.logger.test_rewards
 
             visualizer.plot_performance_metrics(avg_deps, avg_throughputs, self.logger.episode_rewards,test_deps, test_throughputs, test_rewards)
-        # 保存测试数据
+        
         self.logger.save_test_data()
-        print(f"测试可视化结果已保存到 {self.output_dir}/ 目录")
+        print(f"Evaluation visualizations saved to {self.output_dir}/")
